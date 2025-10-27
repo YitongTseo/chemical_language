@@ -2,6 +2,76 @@ from rdkit import Chem
 from rdkit.Chem import AllChem
 import matplotlib.pyplot as plt
 import numpy as np
+import io
+from PIL import Image
+import random 
+
+# Add this function at the top of your file
+def create_jittered_gif(mol, final_bond_word_map, base_params, jitter_increment, num_frames=3):
+    """
+    Create an animated GIF with varying jitter levels.
+    
+    Args:
+        mol: The molecule object
+        final_bond_word_map: Bond word mapping
+        base_params: Dictionary of base parameters
+        num_frames: Number of frames to generate
+        jitter_increment: How much to increase jitter each frame
+    
+    Returns:
+        BytesIO object containing the GIF
+    """
+    frames = []
+    
+    for i in range(num_frames):
+        # Increase jitter for each frame
+        current_vertical_jitter = base_params['letter_vertical_jitter'] #+ (i * jitter_increment)
+        current_horizontal_jitter = base_params['letter_horizontal_jitter'] #+ (i * jitter_increment)
+        
+        fig, bond_words = typewriter_molecule_art(
+            mol, 
+            final_bond_word_map, 
+            family=base_params['selected_font'],
+            letter_spacing=base_params['letter_spacing'],
+            target_length=base_params['max_char_cutoff'],
+            spacing_char='',
+            font_size=base_params['font_size'],
+            vertical_jitter=current_vertical_jitter,
+            letter_spacing_jitter=current_horizontal_jitter,
+            dashed_line_multiplier_for_bonds=base_params['dashed_bond_length'],
+            aromatic_circle_offset=base_params['aromatic_circle_offset'],
+            show_hydrogens=base_params['show_hydrogens'],
+            show_atoms=base_params['show_atoms'],
+            atom_size=base_params['atom_size'],
+            radius=2,
+            reference_size=15,
+            auto_scale=base_params['autoscaling'],
+            jitter_seed=i,
+        )
+        
+        # Convert matplotlib figure to PIL Image
+        buf = io.BytesIO()
+        fig.savefig(buf, format='png', bbox_inches=None, dpi=100)
+        buf.seek(0)
+        img = Image.open(buf)
+        frames.append(img.copy())
+        buf.close()
+        plt.close(fig)
+    
+    # Save as GIF
+    gif_buffer = io.BytesIO()
+    frames[0].save(
+        gif_buffer,
+        format='GIF',
+        save_all=True,
+        append_images=frames[1:],
+        duration=50,  # milliseconds per frame
+        loop=0  # infinite loop
+    )
+    gif_buffer.seek(0)
+    
+    return gif_buffer, frames[0]  # Return both GIF and first frame
+
 
 def typewriter_molecule_art(mol, bond_word_map, 
                                family='American Typewriter',
@@ -18,7 +88,12 @@ def typewriter_molecule_art(mol, bond_word_map,
                                atom_size=2,
                                radius=2,
                                reference_size = 15,
-                               auto_scale = True):
+                               auto_scale = True,
+                               jitter_seed=42):
+    
+    
+    random.seed(jitter_seed)
+    np.random.seed(jitter_seed)
     """
     Cleaner typewriter-style molecule with better spacing.
     Now includes aromatic ring "typed" circles.
@@ -32,8 +107,9 @@ def typewriter_molecule_art(mol, bond_word_map,
     xs = [conf.GetAtomPosition(i).x for i in range(mol.GetNumAtoms())]
     ys = [conf.GetAtomPosition(i).y for i in range(mol.GetNumAtoms())]
     mol_size = max(max(xs) - min(xs), max(ys) - min(ys), 1e-6)
-    scale_factor = mol_size / reference_size if auto_scale else 1.0
-    font_size = font_size / scale_factor
+    if auto_scale:
+        scale_factor = mol_size / reference_size 
+        font_size = max(21 / scale_factor, 12)
     print('scale_factor ', scale_factor , ' font_size ', font_size)
 
     # Get fingerprint info - ONLY radius 2
@@ -264,12 +340,31 @@ def draw_jittered_text(ax, text, x, y, angle, fontsize, jitter_y, jitter_x, fami
                    zorder=3)
 
 
+
+import io
+import base64
+import matplotlib.pyplot as plt
+
+def fig_to_base64_png(fig):
+    """Converts a matplotlib figure to a base64-encoded PNG string."""
+    buf = io.BytesIO()
+    # Use transparent=True if your typewriter_molecule_art sets the background to white
+    # and you want the canvas to show through.
+    fig.savefig(buf, format="png", bbox_inches='tight', transparent=True) 
+    plt.close(fig) # Important: close the figure after saving!
+    data = base64.b64encode(buf.getbuffer()).decode("ascii")
+    return f"data:image/png;base64,{data}"
+
+# In your app.py, you would use this after calling typewriter_molecule_art(mol, ...):
+# image_data_b64 = fig_to_base64_png(fig) 
+
+
 # --- Main Animation Function ---
 
 def animate_molecular_poems(mols_data, sim_params, draw_params):
     """
     Creates an animation where multiple molecular poems float, jiggle, and interact.
-    mols_data is a list of tuples: (mol, bond_word_map, smiles_id)
+    mols_data is a list of tuples: (mol, bond_word_map)
     """
     frame_count = sim_params['frame_count']
     interval_ms = sim_params['interval_ms']
@@ -280,7 +375,7 @@ def animate_molecular_poems(mols_data, sim_params, draw_params):
     
     # Determine the global scaling factor based on all molecules' sizes
     all_sizes = []
-    for mol, _, _ in mols_data:
+    for mol, _ in mols_data:
         conf = mol.GetConformer()
         xs = [conf.GetAtomPosition(i).x for i in range(mol.GetNumAtoms())]
         ys = [conf.GetAtomPosition(i).y for i in range(mol.GetNumAtoms())]
@@ -288,11 +383,17 @@ def animate_molecular_poems(mols_data, sim_params, draw_params):
         all_sizes.append(mol_size)
         
     reference_size = draw_params.get('reference_size', 15)
-    global_scale_factor = max(all_sizes) / reference_size if draw_params['auto_scale'] and all_sizes else 1.0
+    global_scale_factor = max(all_sizes) / reference_size if all_sizes else 1.0
     
-    base_font_size = draw_params['font_size'] / global_scale_factor
+    base_font_size = 0.2 * draw_params['font_size'] / global_scale_factor
     
-    for mol, bond_word_map, _ in mols_data:
+    if draw_params['auto_scale']:
+        base_font_size = 20 * global_scale_factor
+    else:
+        base_font_size = draw_params['font_size']
+
+
+    for mol, bond_word_map in mols_data:
         conf = mol.GetConformer()
         xs = [conf.GetAtomPosition(i).x for i in range(mol.GetNumAtoms())]
         ys = [conf.GetAtomPosition(i).y for i in range(mol.GetNumAtoms())]

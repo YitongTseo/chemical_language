@@ -127,15 +127,37 @@ def generate_poem_by_molecular_walk(
 
                 # ii. Get the Molecular Relevance Vector R_mol (Bias)
                 R_mol = np.zeros(len(top_words_voc))
-                # The bias is based on the initial, chemically-assigned word for the *next* bond
                 chem_word = initial_bond_word_map[next_bond_idx]
                 if chem_word in word_to_index:
                     R_mol[word_to_index[chem_word]] = 1.0 
                 
-                # iii. Weighted Combination & Normalization
+                # iii. Weighted Combination
                 P_final = (1 - molecular_relevance_weight) * P_markov + \
                           molecular_relevance_weight * R_mol
+
+                # ----------------------------------------------------
+                # 💡 New: NON-REPETITION CONSTRAINT
+                
+                # 1. Identify indices of used words
+                used_words = set(final_bond_word_map.values())
+                used_indices = [word_to_index[word] for word in used_words if word in word_to_index]
+                
+                # 2. Hard constraint: Set probability of used words to 0
+                P_final[used_indices] = 0.0
+                
+                # 3. Check if we've zeroed out all options (shouldn't happen unless target is very large)
+                if np.sum(P_final) == 0:
+                    # Fallback: if all words are used, re-enable the *chemical* word only.
+                    # This is a robust way to ensure a choice can still be made.
+                    if chem_word in word_to_index:
+                         P_final[word_to_index[chem_word]] = 1.0
+                    else:
+                         # Fallback to pure uniform if even the chem_word is gone
+                         P_final = np.ones(len(top_words_voc))
+                         
+                # Normalization
                 P_final /= P_final.sum()
+                # ----------------------------------------------------
 
                 # iv. Selection and Update
                 chosen_word_idx = np.random.choice(len(top_words_voc), p=P_final)

@@ -4,11 +4,14 @@ import numpy as np
 
 def get_fingerprint_array(smiles, show_hydrogens, nBits=1024):
     mols = [Chem.MolFromSmiles(s) for s in smiles]
+    altered_mols = []
     for mol in mols:
         if not show_hydrogens:
             mol = Chem.RemoveHs(mol)
         else:
             mol = Chem.AddHs(mol)
+        altered_mols.append(mol)
+    mol = altered_mols
     fps = [AllChem.GetMorganFingerprintAsBitVect(m, radius=2, nBits=nBits) for m in mols]
     fps_array = np.array([np.frombuffer(fp.ToBitString().encode('utf-8'), 'u1') - ord('0') for fp in fps])
     return fps_array

@@ -7,9 +7,11 @@ import matplotlib.pyplot as plt
 import io # Needed to save plot in memory
 from text_utils import get_top_words, create_numpy_transition_matrix
 from molecule_utils import get_fingerprint_array, mol_to_words
-from render_utils import typewriter_molecule_art
+from render_utils import typewriter_molecule_art, animate_molecular_poems, create_jittered_gif
 from combining_utils import map_initial_words_to_features, generate_poem_by_molecular_walk
-
+import base64
+import os
+import tempfile
 
 # Note: Using your provided text/smiles loading logic
 with open('the_pearl.txt', 'r', encoding='utf-8') as f:
@@ -53,7 +55,7 @@ with col1_config:
     # Select box for top_n words (powers of 2)
     top_n_options = [2**i for i in range(8, 13)] # 256, 512, 1024, 2048
     top_n_words = st.selectbox(
-        "# of Functional Group Bins",
+        "Number of Functional Group Bins",
         options=top_n_options,
         index=top_n_options.index(1024),
         key='top_n',
@@ -117,21 +119,14 @@ if st.session_state.get('ready_to_process', False):
     molecule_data = '\n'.join([
         smile.strip()
         for smile in molecule_data.split('\n')
-        if smile.strip() and not smile.strip().startswith('#')
+        if smile.strip() and len(smile.strip()) > 0 and not smile.strip().startswith('#')
     ])
     fps_array = get_fingerprint_array([mol for mol in molecule_data.split('\n') if len(mol) > 0], nBits=top_n_words, show_hydrogens=show_hydrogens)
     column_populations = fps_array.sum(axis=0)
     sorted_column_indices = np.argsort(column_populations)[::-1]
 
-    # --- Target Molecule Input ---
-    target_smiles = st.text_input(
-        "Molecule to Translate",
-        value="CC1([C@@H](N2[C@H](S1)[C@@H](C2=O)NC(=O)[C@@H](C3=CC=C(C=C3)O)N)C(=O)O)C",
-        help="Enter the single SMILES string you wish to translate. NOTE: can be whatever you want! Doesn't have to have been part of the SMILES mapping corpus above, but the idea is if its in distribution you'll get a more appropriate translation."
-    )
-    # 1. New Slider for Molecular Relevance Weight
     molecular_relevance_weight = st.slider(
-        "Text vs Chemical Importance Weighting (0 = Full Text Importance, 1 = Full Chemical Importance)",
+        "Gibberish slider (0 = Makes more sense, 1 = More chemically informed)",
         min_value=0.0,
         max_value=1.0,
         value=0.5,
@@ -139,9 +134,18 @@ if st.session_state.get('ready_to_process', False):
         key='molecular_relevance_weight',
         help="Controls the balance between chemical structure and textual flow. 0.0 means the word selection is purely driven by the textual Markov chain, i.e., how the words naturally flow in the source text. 1.0 means the selection is purely driven by the molecular structure relevance, i.e., which words match closest to the functional group at hand."
     )
+    target_smiles = st.text_area(
+        "Molecule(s) to Translate",
+        value="CC1([C@@H](N2[C@H](S1)[C@@H](C2=O)NC(=O)[C@@H](C3=CC=C(C=C3)O)N)C(=O)O)C"
+         + "\n\nCCCCCCCCCCC/C=C/C(C(COC1C(C(C(C(O1)CO)O)O)OC(=O)CCCCCCCCC/C=C/CCCCCCCC)NC(=O)C(CCCCCCCCCC/C=C\\C/C=C\\CCCCC)O)O"
+         + "\n\nCCN1C=C(C(=O)C2=CC(=C(C=C21)N3CCNCC3)F)C(=O)O"
+         + "\n\nCCCCCCC(=O)N",
+        help="Enter the SMILES string(s) you wish to translate. If you have multiple separate them one per line. NOTE: can be whatever you want! Doesn't have to have been part of the SMILES mapping corpus above, but the idea is if its in distribution you'll get a more appropriate translation.",
+        height=200,
+    )
 
     # 2. Collapsible Section for Optional Rendering Parameters
-    with st.expander("Parameters if you want to tweak the render (or stop it from dancing)"):
+    with st.expander("Parameters if you want to tweak the render (like stopping the jitter dancing 😢)"):
         st.subheader("Molecular Drawing Configuration")
         
         # 3. Drawing Configuration Layout (3 Columns)
@@ -249,60 +253,101 @@ if st.session_state.get('ready_to_process', False):
                 key='dashed_bond_length',
                 value=4.5,
             )
+            stop_animating = st.checkbox(f"Make them stop dancing :'^(", value=False, key=f"animate")
+            animate = not stop_animating
 
     st.write("---")
     
-    if st.button("Translate Molecule!", type='primary'):
-        # Here is where you would call your typewriter_molecule_art_v2 function 
-        # using all the configuration inputs defined above.
-        # st.success("Translating...")
-        mol = Chem.MolFromSmiles(target_smiles)
-        if not show_hydrogens:
-            mol = Chem.RemoveHs(mol)
-        else:
-            mol = Chem.AddHs(mol)
-        # AllChem.Compute2DCoords(mol)
+    if st.button("Translate!", type='primary'):
+        smiles = [
+            smile.strip()
+            for smile in target_smiles.split('\n')
+            if smile.strip() and len(smile.strip()) > 0 and not smile.strip().startswith('#')
+        ]
 
-        words_to_embed = mol_to_words(mol, sorted_column_indices, top_words, nBits=top_n_words)
-        _bit_to_word, bond_to_word_map, _info = map_initial_words_to_features(mol, words_to_embed, nBits=top_n_words)
-        final_bond_word_map = generate_poem_by_molecular_walk(
-            mol, 
-            bond_to_word_map, 
-            probability_matrix, 
-            top_words_voc, 
-            molecular_relevance_weight=molecular_relevance_weight # TODO: make this a parameter... very important one too!
-        )
+        print('target smiles', smiles)
 
-        fig, bond_words = typewriter_molecule_art(
-            mol, 
-            final_bond_word_map, 
-            family=selected_font,
-            letter_spacing=letter_spacing,
-            target_length=max_char_cutoff,
-            spacing_char='',
-            font_size=font_size,
-            vertical_jitter=letter_vertical_jitter,
-            letter_spacing_jitter=letter_horizontal_jitter,
-            dashed_line_multiplier_for_bonds=dashed_bond_length,
-            aromatic_circle_offset= aromatic_circle_offset,
-            show_hydrogens=show_hydrogens,
-            show_atoms=show_atoms,
-            atom_size=atom_size,
-            radius=2,
-            reference_size = 15,
-            auto_scale = autoscaling
-        )
+        mols = [Chem.MolFromSmiles(s) for s in smiles]
+        altered_mols = []
+        for mol in mols:
+            if not show_hydrogens:
+                mol = Chem.RemoveHs(mol)
+            else:
+                mol = Chem.AddHs(mol)
+            altered_mols.append(mol)
+        mols = altered_mols
+        
+        # After processing and converting all your molecules:
+        # Calculate number of columns (e.g., 2 or 3 per row)
+        cols_per_row = 1
 
-        # 2. Display the Matplotlib Figure using st.pyplot()
-        st.pyplot(fig) # This is the command that displays the image!
+        for i, (mol) in enumerate(mols):
+            words_to_embed = mol_to_words(mol, sorted_column_indices, top_words, nBits=top_n_words)
+            _bit_to_word, bond_to_word_map, _info = map_initial_words_to_features(mol, words_to_embed, nBits=top_n_words)
+            final_bond_word_map = generate_poem_by_molecular_walk(
+                mol, 
+                bond_to_word_map, 
+                probability_matrix, 
+                top_words_voc, 
+                molecular_relevance_weight=molecular_relevance_weight / 2
+            )
 
-        # # 3. Optionally display the words that were mapped
-        # st.subheader("Mapped Words")
+            # Create columns every N images
+            if i % cols_per_row == 0:
+                cols = st.columns(cols_per_row)
+            
+            # Collect all parameters in a dictionary
+            base_params = {
+                'selected_font': selected_font,
+                'letter_spacing': letter_spacing,
+                'max_char_cutoff': max_char_cutoff,
+                'font_size': font_size,
+                'letter_vertical_jitter': letter_vertical_jitter,
+                'letter_horizontal_jitter': letter_horizontal_jitter,
+                'dashed_bond_length': dashed_bond_length,
+                'aromatic_circle_offset': aromatic_circle_offset,
+                'show_hydrogens': show_hydrogens,
+                'show_atoms': show_atoms,
+                'atom_size': atom_size,
+                'autoscaling': autoscaling
+            }
+            
+            # Create the GIF
+            gif_buffer, static_frame = create_jittered_gif(
+                mol, 
+                final_bond_word_map, 
+                base_params, 
+                num_frames=3,
+                jitter_increment=0.015
+            )
+            if animate:
+                with cols[i % cols_per_row]:
+                    # 1. Save BytesIO buffer to a temporary file
+                    with tempfile.NamedTemporaryFile(suffix=".gif", delete=False) as tmp_file:
+                        # Write the content of the BytesIO object to the temporary file
+                        tmp_file.write(gif_buffer.getvalue())
+                        anim_path = tmp_file.name
 
-        # lookup = {word: ranking for word, index, ranking in words_to_embed}
-        # setup = [(lookup[word], bond, word )for bond, word in bond_words.items()]
-        # setup.sort(key=lambda x: x[0])
+                    # 2. Use your requested Base64 display method
+                    with open(anim_path, "rb") as f:
+                        contents = f.read()
+                        data_url = base64.b64encode(contents).decode("utf-8")
+                        
+                        # Use st.markdown to inject the GIF via data URI
+                        st.markdown(
+                            f"""
+                            <img 
+                                src="data:image/gif;base64,{data_url}" 
+                                alt="Molecular Poem Animation" 
+                                style="max-width: 100%; height: auto; display: block; margin: 0 auto; border-radius: 8px;">
+                            """,
+                            unsafe_allow_html=True
+                        )
+                        
+                    # 3. Cleanup the temporary file
+                    os.unlink(anim_path)
 
-        # # bond_words is a dictionary, display it cleanly
-        # word_df = pd.DataFrame(setup, columns=['Ranking', 'Bond Index', 'Word'])
-        # st.dataframe(word_df, hide_index=True)
+            else:
+                with cols[i % cols_per_row]:
+                    # Display static first frame
+                    st.image(static_frame, use_container_width=True)
