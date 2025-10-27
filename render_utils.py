@@ -3,7 +3,7 @@ from rdkit.Chem import AllChem
 import matplotlib.pyplot as plt
 import numpy as np
 
-def typewriter_molecule_art(smiles, words_to_embed, 
+def typewriter_molecule_art(mol, bond_word_map, 
                                family='American Typewriter',
                                letter_spacing=0.0085,
                                target_length=20,
@@ -23,14 +23,6 @@ def typewriter_molecule_art(smiles, words_to_embed,
     Cleaner typewriter-style molecule with better spacing.
     Now includes aromatic ring "typed" circles.
     """
-
-    # Prepare molecule
-    mol = Chem.MolFromSmiles(smiles)
-    if not show_hydrogens:
-        mol = Chem.RemoveHs(mol)
-    else:
-        mol = Chem.AddHs(mol)
-
     AllChem.Compute2DCoords(mol)
 
     fig, ax = plt.subplots(figsize=(20, 20), facecolor='white')
@@ -47,24 +39,6 @@ def typewriter_molecule_art(smiles, words_to_embed,
     # Get fingerprint info - ONLY radius 2
     info = {}
     fp = AllChem.GetMorganFingerprintAsBitVect(mol, radius=radius, nBits=1024, bitInfo=info)
-
-    # Map bits to words
-    bit_to_word = {bit_idx: word for word, bit_idx, ranking in words_to_embed}
-
-    # Assign words to bonds
-    bond_words = {}
-    for bit_idx, word in bit_to_word.items():
-        if bit_idx in info:
-            atom_idx, rad = info[bit_idx][0]
-            env = Chem.FindAtomEnvironmentOfRadiusN(mol, rad, atom_idx)
-            for bond_idx in env:
-                if bond_idx not in bond_words:
-                    bond_words[bond_idx] = word
-                    break
-
-    print(f"Mapped {len(bond_words)} words to {mol.GetNumBonds()} bonds")
-    print(f"Bonds with words: {sorted(bond_words.keys())}")
-    print(f"Bonds without words: {[b.GetIdx() for b in mol.GetBonds() if b.GetIdx() not in bond_words]}")
 
     # --- Helper Functions ---
     def format_word_for_bond(word, target_len, spacing_char):
@@ -149,8 +123,8 @@ def typewriter_molecule_art(smiles, words_to_embed,
         # Determine if bond is aromatic
         is_aromatic = bond.GetIsAromatic()
 
-        if bond_idx in bond_words:
-            word = bond_words[bond_idx]
+        if bond_idx in bond_word_map:
+            word = bond_word_map[bond_idx]
             formatted_word = format_word_for_bond(word, target_length, spacing_char)
             angle = np.degrees(np.arctan2(p2.y - p1.y, p2.x - p1.x))
             if angle > 90 or angle < -90:
@@ -241,4 +215,210 @@ def typewriter_molecule_art(smiles, words_to_embed,
     ax.axis('off')
     ax.margins(0.12)
     plt.tight_layout()
-    return fig, bond_words
+    return fig, bond_word_map
+
+
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation
+from rdkit import Chem
+from rdkit.Chem import AllChem
+import tempfile
+import os
+
+# --- Helper Functions for Text Formatting and Jittered Drawing ---
+
+def format_word_for_bond(word, target_len):
+    """Format word to target length, centralizing it (Simplified for animation)."""
+    target_len = min(target_len, 20)
+    
+    if len(word) > target_len:
+        return word[:target_len]
+    
+    padding_needed = target_len - len(word)
+    left_pad = padding_needed // 2
+    
+    # Use spaces for padding
+    return (' ' * left_pad) + word
+    
+
+def draw_jittered_text(ax, text, x, y, angle, fontsize, jitter_y, jitter_x, family, color='black'):
+    """Draw text with subtle jitter by applying a small, random, per-frame offset."""
+    
+    # Calculate position with small, random, per-frame offset for "jiggle"
+    jiggle_x = np.random.uniform(-jitter_x, jitter_x) * 0.5 
+    jiggle_y = np.random.uniform(-jitter_y, jitter_y) * 0.5
+    
+    char_x = x + jiggle_x
+    char_y = y + jiggle_y
+    
+    # Draw the whole text object as one string
+    return ax.text(char_x, char_y, text,
+                   rotation=angle,
+                   rotation_mode='anchor',
+                   ha='center', va='center',
+                   fontsize=fontsize,
+                   weight='normal',
+                   family=family,
+                   color=color,
+                   zorder=3)
+
+
+# --- Main Animation Function ---
+
+def animate_molecular_poems(mols_data, sim_params, draw_params):
+    """
+    Creates an animation where multiple molecular poems float, jiggle, and interact.
+    mols_data is a list of tuples: (mol, bond_word_map, smiles_id)
+    """
+    frame_count = sim_params['frame_count']
+    interval_ms = sim_params['interval_ms']
+    sim_size = sim_params['sim_size']
+    
+    # 1. INITIALIZE MOLECULE STATES
+    molecular_states = []
+    
+    # Determine the global scaling factor based on all molecules' sizes
+    all_sizes = []
+    for mol, _, _ in mols_data:
+        conf = mol.GetConformer()
+        xs = [conf.GetAtomPosition(i).x for i in range(mol.GetNumAtoms())]
+        ys = [conf.GetAtomPosition(i).y for i in range(mol.GetNumAtoms())]
+        mol_size = max(max(xs) - min(xs), max(ys) - min(ys), 1e-6)
+        all_sizes.append(mol_size)
+        
+    reference_size = draw_params.get('reference_size', 15)
+    global_scale_factor = max(all_sizes) / reference_size if draw_params['auto_scale'] and all_sizes else 1.0
+    
+    base_font_size = draw_params['font_size'] / global_scale_factor
+    
+    for mol, bond_word_map, _ in mols_data:
+        conf = mol.GetConformer()
+        xs = [conf.GetAtomPosition(i).x for i in range(mol.GetNumAtoms())]
+        ys = [conf.GetAtomPosition(i).y for i in range(mol.GetNumAtoms())]
+        
+        mol_width = max(xs) - min(xs)
+        mol_height = max(ys) - min(ys)
+        
+        state = {
+            'mol': mol,
+            'map': bond_word_map,
+            # Effective radius for collision, normalized by scale factor
+            'radius': max(mol_width, mol_height) / 2.0 / global_scale_factor * 0.5, 
+            'pos': np.random.uniform(sim_size * 0.2, sim_size * 0.8, size=2), # Initial position
+            'vel': np.random.uniform(-0.05, 0.05, size=2) * 0.5, # Initial slow velocity
+            # RDKit's normalized center, used as internal offset
+            'center_offset': np.array([np.mean(xs), np.mean(ys)]) / global_scale_factor 
+        }
+        molecular_states.append(state)
+
+    # 2. SETUP PLOT
+    # We use a square plot area for simple 2D physics
+    fig, ax = plt.subplots(figsize=(10, 10), facecolor='white') 
+    ax.set_xlim(0, sim_size)
+    ax.set_ylim(0, sim_size)
+    ax.axis('off')
+    ax.set_facecolor('white')
+
+    # 3. UPDATE FUNCTION (Executed per frame)
+    def update_frame(frame):
+        ax.clear()
+        ax.set_xlim(0, sim_size)
+        ax.set_ylim(0, sim_size)
+        ax.axis('off')
+        
+        # Physics Step
+        for i in range(len(molecular_states)):
+            state_i = molecular_states[i]
+            
+            # A. Move and Brownian Jiggle
+            state_i['pos'] += state_i['vel'] * 0.5
+            state_i['vel'] += np.random.uniform(-0.005, 0.005, size=2) # Brownian force
+            
+            # B. Wall Collision (Elastic)
+            if state_i['pos'][0] < state_i['radius'] or state_i['pos'][0] > sim_size - state_i['radius']:
+                state_i['vel'][0] *= -1
+            if state_i['pos'][1] < state_i['radius'] or state_i['pos'][1] > sim_size - state_i['radius']:
+                state_i['vel'][1] *= -1
+
+            # C. Molecule Collision (Simple Repulsion)
+            for j in range(i + 1, len(molecular_states)):
+                state_j = molecular_states[j]
+                
+                delta = state_j['pos'] - state_i['pos']
+                distance = np.linalg.norm(delta)
+                min_distance = state_i['radius'] + state_j['radius']
+                
+                if distance < min_distance and distance > 1e-6:
+                    # Simple push-apart force to resolve overlap
+                    overlap = min_distance - distance
+                    push = delta / distance * (overlap * 0.01) 
+                    
+                    state_i['pos'] -= push
+                    state_j['pos'] += push
+                    
+                    # Reflect velocities (basic elastic collision)
+                    state_i['vel'] = state_i['vel'] - 2 * np.dot(state_i['vel'], delta) / (distance**2) * delta
+                    state_j['vel'] = state_j['vel'] - 2 * np.dot(state_j['vel'], -delta) / (distance**2) * (-delta)
+
+        # Drawing Step (Render all molecules)
+        for state in molecular_states:
+            mol = state['mol']
+            bond_word_map = state['map']
+            conf = mol.GetConformer()
+            
+            # Calculate the global translation vector
+            global_offset = state['pos'] + state['center_offset'] 
+            
+            # --- Draw Words (Bonds) ---
+            for bond in mol.GetBonds():
+                bond_idx = bond.GetIdx()
+                if bond_idx in bond_word_map:
+                    word = bond_word_map[bond_idx]
+                    formatted_word = format_word_for_bond(word, draw_params['target_length'])
+                    
+                    # Get RDKit coordinates
+                    p1 = conf.GetAtomPosition(bond.GetBeginAtomIdx())
+                    p2 = conf.GetAtomPosition(bond.GetEndAtomIdx())
+
+                    # Apply scaling and translation
+                    p1_scaled = np.array([p1.x, p1.y]) / global_scale_factor
+                    p2_scaled = np.array([p2.x, p2.y]) / global_scale_factor
+                    
+                    # Translate to current simulation position
+                    p1_sim = p1_scaled + global_offset - state['center_offset']
+                    p2_sim = p2_scaled + global_offset - state['center_offset']
+                    
+                    mid_x, mid_y = (p1_sim + p2_sim) / 2
+                    
+                    angle = np.degrees(np.arctan2(p2_sim[1] - p1_sim[1], p2_sim[0] - p1_sim[0]))
+                    if angle > 90 or angle < -90:
+                        angle += 180
+
+                    # Draw text with jitter
+                    draw_jittered_text(ax, formatted_word, mid_x, mid_y, angle,
+                                       base_font_size * 1.4, # Slightly larger for dashed bonds
+                                       draw_params['vertical_jitter'], draw_params['letter_spacing_jitter'], 
+                                       draw_params['family'])
+
+        return ax.artists # Required for FuncAnimation
+
+    # 4. CREATE ANIMATION
+    anim = FuncAnimation(
+        fig, 
+        update_frame, 
+        frames=frame_count, 
+        interval=interval_ms, 
+        blit=False, 
+        repeat=True
+    )
+    
+    # 5. Save and Return Path to Streamlit
+    with tempfile.NamedTemporaryFile(suffix='.gif', delete=False) as tmpfile:
+        anim_path = tmpfile.name
+    
+    # Save as GIF for Streamlit compatibility
+    anim.save(anim_path, writer='pillow', fps=1000 // interval_ms)
+    plt.close(fig) # Close the matplotlib figure
+    
+    return anim_path
