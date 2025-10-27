@@ -4,3 +4,4 @@ numpy
 matplotlib
 rdkit-pypi
 scipy
+nltk

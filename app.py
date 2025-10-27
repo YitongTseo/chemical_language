@@ -5,70 +5,275 @@ from rdkit.Chem import AllChem
 import numpy as np
 import matplotlib.pyplot as plt
 import io # Needed to save plot in memory
-# Copy your existing functions (row_to_words and typewriter_molecule_art_v2) here.
+from text_utils import get_top_words
+from molecule_utils import get_fingerprint_array, mol_to_words
+from render_utils import typewriter_molecule_art
+
+# Note: Using your provided text/smiles loading logic
+with open('the_pearl.txt', 'r', encoding='utf-8') as f:
+    text = f.read()
+
+with open('seashell_smiles.txt', 'r', encoding='utf-8') as f:
+    smiles = f.read()
+
 
 # --- Streamlit Interface ---
-st.title("Chemical Language")
+st.title("Chem Lang")
 
-# 1. File Uploads
-uploaded_csv = st.file_uploader("Upload Molecule Data (a list of smiles strings with header 'smiles')", type="csv")
-uploaded_txt = st.file_uploader("Upload Plain Text Corpus (can be anything)", type="txt")
+# 1. Horizontal Corpus Layout (Row 1)
+col1, col2 = st.columns(2)
 
-if uploaded_csv and uploaded_txt:
-    # Load and process data (This mirrors your initial setup)
-    df = pd.read_csv(uploaded_csv)
-    top_words = pd.read_csv(uploaded_txt, delimiter='\t')
+with col1:
+    # --- Molecule Corpus Input ---
+    molecule_data = st.text_area(
+        "Molecules (SMILES strings, one per line)",
+        value=smiles,
+        height=350,
+        help="Enter a list of SMILES strings. Each string should be on a new line."
+    )
+
+with col2:
+    # --- Text Corpus Input ---
+    text_corpus = st.text_area(
+        "Text Corpus (can be anything)",
+        value=text,
+        height=300,
+        help="Enter the text body the molecular language will draw from."
+    )
+
+st.write("---") # Separator for visual clarity
+
+# 2. Horizontal Configuration Layout (Row 2)
+# We use the same columns for alignment
+col1_config, col2_config = st.columns(2)
+
+with col1_config:    
+    # Select box for top_n words (powers of 2)
+    top_n_options = [2**i for i in range(8, 13)] # 256, 512, 1024, 2048
+    top_n_words = st.selectbox(
+        "Functional Groups Population Size",
+        options=top_n_options,
+        index=top_n_options.index(1024),
+        key='top_n',
+        help="Choose the number of functional group to word mappings."
+    )
+
+with col2_config:
     
-    # Data cleaning (as in your original script)
-    df = df.dropna(subset=['smiles'])
-    df = df[df['name']!= '[]']
-    df['smiles'] = df['smiles'].apply(lambda x: x[2:-2])
-    mols = [Chem.MolFromSmiles(s) for s in df['smiles']]
-    fps = [AllChem.GetMorganFingerprintAsBitVect(m, radius=2, nBits=1024) for m in mols]
-    fps_array = np.array([np.frombuffer(fp.ToBitString().encode('utf-8'), 'u1') - ord('0') for fp in fps])
+    # List of words to scrub
+    words_to_scrub = st.text_area(
+        "Keywords to Scrub",
+            value=','.join([
+            'Kino', 'Juana', 'Coyotito', 'Juan', 'Tomas',
+            'La', 'Paz', 'Gulf', 'California', 'Mexico',
+        ]),
+        height=68,
+        help="Enter any specific words you want to exclude, separated by commas, case insensitive"
+    )
+    
+    # Boolean input for stop word filtering
+    filter_stopwords = st.checkbox(
+        "Filter Stop Words",
+        value=True,
+        key='filter_stop',
+        help="Check to filter out common English stop words (e.g., 'a', 'the', 'his', 'not', etc.)"
+    )
+
+
+# 3. Big, Eye-Catching Button
+st.markdown("""
+<style>
+/* Targets the specific Streamlit primary button and increases its size */
+div.stButton > button:first-child {
+    font-size: 20px;
+    height: 3em;
+    width: 100%;
+}
+</style>""", unsafe_allow_html=True)
+
+if st.button("Create Mapping", type='primary'):
+    st.session_state.ready_to_process = True
+    
+# --- Python Logic Placeholder ---
+if st.session_state.get('ready_to_process', False):
+    st.success("Inputs captured! Now, configure molecular drawing settings.")
+
+    words = words_to_scrub.split(',')
+    top_words = get_top_words(
+        text=text_corpus,
+        top_n=top_n_words,
+        scrubbed_words=words_to_scrub.split(','),
+        filter_stop_words=filter_stopwords,
+    )
+    fps_array = get_fingerprint_array([mol for mol in molecule_data.split('\n') if len(mol) > 0], nBits=top_n_words)
     column_populations = fps_array.sum(axis=0)
     sorted_column_indices = np.argsort(column_populations)[::-1]
+
+    st.write("---")
     
-    # 2. Molecule Selection
-    smiles_list = df['smiles'].tolist()
-    selected_smiles = st.selectbox("Select or Enter SMILES string:", smiles_list + ["Custom SMILES"])
+    # --- Target Molecule Input ---
+    target_smiles = st.text_input(
+        "Molecule to Translate",
+        value="CC1([C@@H](N2[C@H](S1)[C@@H](C2=O)NC(=O)[C@@H](C3=CC=C(C=C3)O)N)C(=O)O)C",
+        help="Enter the single SMILES string you wish to translate. NOTE: can be whatever you want! Doesn't have to have been part of the SMILES mapping corpus above, but the idea is if its in distribution you'll get a more appropriate translation."
+    )
     
-    if selected_smiles == "Custom SMILES":
-        smiles_input = st.text_input("Enter SMILES string:", "C1=CC=CC=C1")
-    else:
-        smiles_input = selected_smiles
+    st.subheader("Molecular Drawing Configuration")
+    
+    # 4. Drawing Configuration Layout (3 Columns)
+    draw_col1, draw_col2, draw_col3 = st.columns(3)
 
-    if smiles_input:
-        # 3. Parameter Sliders (Use st.sidebar for a cleaner look)
-        st.sidebar.header("Art Parameters")
-        target_length = st.sidebar.slider("Target Word Length", 5, 40, 20)
-        font_size = st.sidebar.slider("Font Size", 10, 50, 21)
-        vertical_jitter = st.sidebar.slider("Vertical Jitter", 0.0, 0.1, 0.03)
-        letter_spacing = st.sidebar.slider("Letter Spacing", 0.0, 0.02, 0.0085)
+    # --- Column 1: Font and Atom Display ---
+    with draw_col1:
+        font_options = ["American Typewriter", "Courier New", "Monospace", "Arial", "Times New Roman"]
+        selected_font = st.selectbox(
+            "Font",
+            options=font_options,
+            index=0,
+            key='font_select'
+        )
+        
+        max_char_cutoff = st.number_input(
+            "Max Character Cutoff Length",
+            min_value=1,
+            max_value=100,
+            value=20,
+            key='max_char_cutoff'
+        )
+        
+        show_atoms = st.checkbox(
+            "Show Atoms",
+            value=False,
+            key='show_atoms'
+        )
+        
+        show_hydrogens = st.checkbox(
+            "Show Hydrogens",
+            value=False,
+            key='show_hydrogens',
+            disabled=not(show_atoms),
+        )
 
-        # Get words for the selected molecule
-        try:
-            mol_index = df[df['smiles'] == smiles_input].index[0]
-            words_to_embed = row_to_words(fps_array[mol_index]) # Use your existing row_to_words logic
-        except Exception:
-            st.warning("Could not compute fingerprints for the entered SMILES or find it in the data. Using placeholder words.")
-            words_to_embed = [('WATER', 10), ('STONE', 50), ('BREAD', 100), ('PEARL', 200), ('JUAN', 300), ('KINO', 400)]
+        atom_size = st.number_input(
+            "Atom Size",
+            min_value=1,
+            max_value=30,
+            value=3,
+            key='atom_size',
+            disabled=not(show_atoms),
+        )
 
-        # --- Generate Art ---
-        if st.button("Generate Typewriter Art"):
-            st.subheader(f"Rendering: {smiles_input}")
-            
-            # The function must now return the Matplotlib figure object
-            fig, bond_words = typewriter_molecule_art_v2(
-                smiles=smiles_input,
-                words_to_embed=words_to_embed,
-                target_length=target_length,
-                font_size=font_size,
-                vertical_jitter=vertical_jitter,
-                letter_spacing=letter_spacing,
-                # Pass other arguments as needed
-            )
-            
-            # Display the figure in Streamlit
-            st.pyplot(fig)
-            st.caption(f"Words used on bonds: {list(bond_words.values())}")
+
+    # --- Column 3: Jitter and Spacing ---
+    with draw_col2:
+        letter_spacing = st.number_input(
+            "Letter Spacing",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.0085,
+            step=0.0001,
+            format="%.4f",
+            key='letter_spacing'
+        )
+        
+        letter_horizontal_jitter = st.number_input(
+            "Horizontal Jitter",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.03,
+            step=0.01,
+            format="%.2f",
+            key='h_jitter'
+        )
+        
+        letter_vertical_jitter = st.number_input(
+            "Vertical Jitter",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.03,
+            step=0.01,
+            format="%.2f",
+            key='v_jitter'
+        )
+
+        aromatic_circle_offset = st.number_input(
+            "Aromatic Circle Offset",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.3,
+            step=0.1,
+            format="%.1f",
+            key='aromatic_offset'
+        )
+
+        # --- Column 2: Scaling and Font Size ---
+    with draw_col3:
+        autoscaling = st.checkbox(
+            "Autoscale Font Size",
+            value=False,
+            key='autoscaling'
+        )
+        
+        # Font size input, conditionally disabled
+        font_size = st.number_input(
+            "Font Size (px)",
+            min_value=5,
+            max_value=50,
+            value=21,
+            key='font_size',
+            disabled=autoscaling, # This handles the "greyed out" feature
+            help="Disabled if 'Autoscale Font Size' is checked."
+        )
+
+        dashed_bond_length = st.number_input(
+            "Dashed Bond Length",
+            min_value=1.0,
+            max_value=30.0,
+            key='dashed_bond_length',
+            value=4.5,
+        )
+
+    st.write("---")
+    
+    if st.button("Translate Molecule!", type='primary'):
+        # Here is where you would call your typewriter_molecule_art_v2 function 
+        # using all the configuration inputs defined above.
+        st.success("Translating...")
+
+
+        words_to_embed = mol_to_words(target_smiles, sorted_column_indices, top_words, nBits=top_n_words)
+
+        fig, bond_words = typewriter_molecule_art(
+            target_smiles, 
+            words_to_embed, 
+            family=selected_font,
+            letter_spacing=letter_spacing,
+            target_length=max_char_cutoff,
+            spacing_char='',
+            font_size=font_size,
+            vertical_jitter=letter_vertical_jitter,
+            letter_spacing_jitter=letter_horizontal_jitter,
+            dashed_line_multiplier_for_bonds=dashed_bond_length,
+            aromatic_circle_offset= aromatic_circle_offset,
+            show_hydrogens=show_hydrogens,
+            show_atoms=show_atoms,
+            atom_size=atom_size,
+            radius=2,
+            reference_size = 15,
+            auto_scale = autoscaling
+        )
+
+        # 2. Display the Matplotlib Figure using st.pyplot()
+        st.subheader("Molecular Art Translation 🎨")
+        st.pyplot(fig) # This is the command that displays the image!
+
+        # 3. Optionally display the words that were mapped
+        st.subheader("Mapped Words")
+
+        lookup = {word: ranking for word, index, ranking in words_to_embed}
+        setup = [(lookup[word], bond, word )for bond, word in bond_words.items()]
+        setup.sort(key=lambda x: x[0])
+
+        # bond_words is a dictionary, display it cleanly
+        word_df = pd.DataFrame(setup, columns=['Ranking', 'Bond Index', 'Word'])
+        st.dataframe(word_df, hide_index=True)
