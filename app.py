@@ -264,7 +264,6 @@ if st.session_state.get('ready_to_process', False):
         )
 
         # 2. Display the Matplotlib Figure using st.pyplot()
-        st.subheader("Molecular Art Translation 🎨")
         st.pyplot(fig) # This is the command that displays the image!
 
         # 3. Optionally display the words that were mapped
