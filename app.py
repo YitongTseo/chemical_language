@@ -96,7 +96,7 @@ if st.button("Create Mapping", type='primary'):
     
 # --- Python Logic Placeholder ---
 if st.session_state.get('ready_to_process', False):
-    st.success("Inputs captured! Now, configure molecular drawing settings.")
+    st.success("Mapping made! Ready now for molecule by molecule translation")
 
     words = words_to_scrub.split(',')
     top_words = get_top_words(
