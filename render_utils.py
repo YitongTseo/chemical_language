@@ -110,7 +110,7 @@ def typewriter_molecule_art(mol, bond_word_map,
     if auto_scale:
         scale_factor = mol_size / reference_size 
         font_size = max(21 / scale_factor, 12)
-    print('scale_factor ', scale_factor , ' font_size ', font_size)
+        print('scale_factor ', scale_factor , ' font_size ', font_size)
 
     # Get fingerprint info - ONLY radius 2
     info = {}
